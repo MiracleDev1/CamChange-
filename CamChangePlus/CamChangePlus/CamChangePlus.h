@@ -1,7 +1,19 @@
-﻿#pragma once
+
+#pragma once
+#include <string>
 
 #include <chrono> // For timing
+#include <vector>
+#include <fstream>
+#include <filesystem>
+#include <cstdlib>
+#include <iostream>
+
 #include "bakkesmod/plugin/bakkesmodplugin.h"
+#include "nlohmann/json.hpp"
+
+using json = nlohmann::json;
+
 #include "bakkesmod/plugin/pluginwindow.h"
 #include "GuiBase.h"  // ✅ Ensure this is included
 #include "imgui/imgui.h" // Core ImGui functions
@@ -33,6 +45,11 @@ public:
     virtual void onUnload() override;
 
     std::vector<ActionMapping> eventActions;
+    void SaveMappingsToFile();
+    void LoadMappingsFromFile(const std::string& filename);
+    
+    std::string GetMenuName() override { return "CamChange+"; }
+    void LogDebugToFile(const std::string& message);
 
 private:
     bool isWindowOpen_ = false;
@@ -41,7 +58,7 @@ private:
     // ===========================
     //        GUI
     //
-    
+    void RenderWindow();
     void RenderSettings();
     void ExecuteAction(const std::string& action, float value);
     void ProcessEventActions(const std::string& event);
@@ -91,8 +108,9 @@ private:
     size_t currentTasIndex = 0; // Track the current action being executed
     bool prevJumpState = false;  // Tracks the previous state of GetbJumped()
     bool prevOnGround = true;
-
-    // Ball touch cooldown tracking
+    std::string currentSequenceName = "New Shot"; // Stores the currently selected shot name
+    bool showCamChangeWindow = false; // Tracks if the window is open
     std::chrono::steady_clock::time_point lastBallTouchTime;
     constexpr static double ballTouchCooldown = 0.2; // 200ms cooldown
+    std::vector<std::pair<std::string, std::vector<std::pair<std::string, std::string>>>> eventMappings;
 };

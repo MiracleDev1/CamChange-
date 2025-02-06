@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "CamChangePlus.h"
 #include "GuiBase.h"
 
@@ -7,13 +7,28 @@ BAKKESMOD_PLUGIN(CamChangePlus, "Camera control based on in-game events", plugin
 std::shared_ptr<CVarManagerWrapper> _globalCvarManager;
 
 void CamChangePlus::onLoad() {
-    // Initialize GUI context explicitly
+    cvarManager->log("[CamChangePlus] Plugin Loaded.");
+
+    // Hook game events
+    HookGameEvents();
+
+    // Register commands
+    RegisterCommands();
+
+    // Bind F1 key to toggle menu
+    cvarManager->setBind("F1", "togglemenu CamChangePlus");
+
+    // Initialize GUI context
+    if (ImGui::GetCurrentContext() == nullptr) {
+        ImGui::CreateContext();
+    }
     SettingsWindowBase::SetImGuiContext(reinterpret_cast<uintptr_t>(ImGui::GetCurrentContext()));
     PluginWindowBase::SetImGuiContext(reinterpret_cast<uintptr_t>(ImGui::GetCurrentContext()));
 
-    cvarManager->log("[CamChangePlus] Plugin Loaded!");
-    HookGameEvents();
-    RegisterCommands();
+    // Ensure the window is open when loaded
+    isWindowOpen_ = true;
+
+    cvarManager->log("[CamChangePlus] Initialization complete.");
 }
 
 void CamChangePlus::onUnload() {
@@ -21,12 +36,15 @@ void CamChangePlus::onUnload() {
 }
 
 void CamChangePlus::HookGameEvents() {
-    // Hook into in-game events
+    cvarManager->log("[CamChangePlus] Hooking game events...");
+
     gameWrapper->HookEvent("Function TAGame.Car_TA.OnHitBall", [this](...) { OnBallTouch(); });
     gameWrapper->HookEvent("Function TAGame.GameEvent_Soccar_TA.EventGoalScored", [this](...) { OnExplosion(); });
     gameWrapper->HookEvent("Function TAGame.Car_TA.OnJumpPressed", [this](...) { OnJump(); });
     gameWrapper->HookEvent("Function CarComponent_DoubleJump_TA.Active.BeginState", [this](...) { OnDoubleJump(); });
     gameWrapper->HookEvent("Function TAGame.CarComponent_Dodge_TA.EventActivateDodge", [this](...) { OnFlip(); });
+
+    cvarManager->log("[CamChangePlus] Game events hooked successfully.");
 }
 
 void CamChangePlus::OnBallTouch() {
@@ -223,18 +241,26 @@ void CamChangePlus::ProcessEventActions(const std::string& event) {
 }
 
 void CamChangePlus::ExecuteAction(const std::string& action, float value = 50.0f) {
+    static bool yawDirectionRight = true; // true = right, false = left
+
     if (action == "Enable Reverse Cam") {
-        ToggleReverseCam();
+        if (!isUsingBehindView) ToggleReverseCam();
     }
     else if (action == "Disable Reverse Cam") {
+        if (isUsingBehindView) ToggleReverseCam();
+    }
+    else if (action == "Toggle Reverse Cam") {
         ToggleReverseCam();
     }
-    else if (action == "Swivel Right") {
-        AdjustCameraYaw(value);
+    else if (action == "Toggle Swivel Direction") {
+        yawDirectionRight = !yawDirectionRight;
+        cvarManager->log("[CamChangePlus] Yaw direction set to " + std::string(yawDirectionRight ? "Right" : "Left"));
     }
-    else if (action == "Swivel Left") {
-        AdjustCameraYaw(-value);
+    else if (action == "Adjust Camera Yaw") {
+        float yawValue = yawDirectionRight ? value : -value; // Use toggled direction
+        AdjustCameraYaw(yawValue);
     }
+
     cvarManager->log("[CamChangePlus] Executed Action: " + action + " with value: " + std::to_string(value));
 }
 
@@ -285,74 +311,290 @@ void CamChangePlus::StopSequencePlayback() {
     ResetToDefault();
 }
 
+void CamChangePlus::SaveMappingsToFile() {
+    json j;
+    std::string filepath = gameWrapper->GetDataFolder().string() + "/CamChangePlus_shots.json";
+
+    // Load existing file if it exists
+    std::ifstream fileRead(filepath);
+    if (fileRead.is_open()) {
+        fileRead >> j;
+        fileRead.close();
+    }
+
+    // Store current sequence
+    j["shots"][currentSequenceName] = json::array();
+    for (const auto& action : eventActions) {
+        j["shots"][currentSequenceName].push_back({
+            {"eventName", action.eventName},
+            {"actionName", action.actionName},
+            {"delay", action.delay},
+            {"customValue", action.customValue}
+            });
+    }
+
+    // Save back to file
+    std::ofstream fileWrite(filepath);
+    if (fileWrite.is_open()) {
+        fileWrite << j.dump(4);
+        fileWrite.close();
+        cvarManager->log("[CamChangePlus] Saved sequence: " + currentSequenceName);
+    }
+    else {
+        cvarManager->log("[CamChangePlus] Error: Could not save file.");
+    }
+}
+
+void CamChangePlus::LoadMappingsFromFile(const std::string& sequenceName) {
+    json j;
+    std::string filepath = gameWrapper->GetDataFolder().string() + "/CamChangePlus_shots.json";
+
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        cvarManager->log("[CamChangePlus] Error: No saved shots found.");
+        return;
+    }
+
+    file >> j;
+    file.close();
+
+    if (j.contains("shots") && j["shots"].contains(sequenceName)) {
+        eventActions.clear();
+        for (const auto& mapping : j["shots"][sequenceName]) {
+            eventActions.push_back({
+                mapping["eventName"],
+                mapping["actionName"],
+                mapping["delay"],
+                mapping["customValue"]
+                });
+        }
+        currentSequenceName = sequenceName;
+        cvarManager->log("[CamChangePlus] Loaded sequence: " + sequenceName);
+    }
+    else {
+        cvarManager->log("[CamChangePlus] Error: Sequence not found.");
+    }
+}
+
+void CamChangePlus::LogDebugToFile(const std::string& message) {  // Use CamChangePlus::
+    try {
+        std::string desktopPath = std::filesystem::path(std::getenv("USERPROFILE")).string() + "/Desktop";
+        std::string logFilePath = desktopPath + "/CamChangePlus_DebugLog.txt";
+
+        std::ofstream logFile(logFilePath, std::ios::app);
+        if (logFile.is_open()) {
+            logFile << message << std::endl;
+            logFile.close();
+        }
+    }
+    catch (const std::exception& e) {
+        std::cout << "[CamChangePlus] Exception: " << e.what() << std::endl;
+    }
+    catch (...) {
+        std::cout << "[CamChangePlus] Unknown error occurred while logging to file." << std::endl;
+    }
+}
+
 void CamChangePlus::RenderSettings() {
-    ImGui::Text("CamChangePlus Plugin Settings");
-
-    static std::vector<const char*> events = { "Jump", "Flip", "Ball Touch", "Explosion" };
-    static std::vector<const char*> actions = { "Enable Reverse Cam", "Disable Reverse Cam", "Swivel Right", "Swivel Left" };
-
-    static int selectedEvent = 0;
-    static int selectedAction = 0;
-    static float selectedDelay = 0.0f;
-    static float customValue = 50.0f;  // Default swivel percentage
-
-    // Dropdowns for selecting event and action
-    ImGui::Combo("Event", &selectedEvent, events.data(), events.size());
-    ImGui::Combo("Action", &selectedAction, actions.data(), actions.size());
-    ImGui::InputFloat("Delay (seconds)", &selectedDelay, 0.1f, 1.0f, "%.1f");
-
-    // If the action is Swivel Right or Swivel Left, allow the user to set how far it swivels
-    if (strcmp(actions[selectedAction], "Swivel Right") == 0 || strcmp(actions[selectedAction], "Swivel Left") == 0) {
-        ImGui::SliderFloat("Swivel Percentage", &customValue, -100.0f, 100.0f, "%.1f%%");
+    if (ImGui::Button("Open CamChangePlus", ImVec2(200, 40))) {
+        gameWrapper->Execute([this](GameWrapper* gw) {
+            _globalCvarManager->executeCommand("togglemenu " + GetMenuName());
+            });
     }
-
-    if (ImGui::Button("Add Mapping")) {
-        eventActions.push_back({ events[selectedEvent], actions[selectedAction], selectedDelay, customValue });
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Bind this menu in BakkesMod!");
     }
+}
 
-    ImGui::Separator();
-    ImGui::Text("Configured Mappings (Drag to Reorder):");
 
-    // Drag-and-Drop Reordering
-    for (size_t i = 0; i < eventActions.size(); ++i) {
-        ImGui::PushID(static_cast<int>(i));
+void CamChangePlus::RenderWindow() {
+    if (!isWindowOpen_) return;
 
-        // Drag source
-        if (ImGui::Selectable(eventActions[i].eventName.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick)) {
-            if (ImGui::IsItemActive() && !ImGui::IsItemHovered()) {
-                int swapIndex = (ImGui::GetMouseDragDelta().y < 0) ? i - 1 : i + 1;
-                if (swapIndex >= 0 && swapIndex < eventActions.size()) {
-                    std::swap(eventActions[i], eventActions[swapIndex]);
-                    ImGui::ResetMouseDragDelta();
+    ImGui::SetNextWindowSize(ImVec2(850, 550), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(500, 300), ImVec2(1200, 800));
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.FrameRounding = 3.0f;
+    style.WindowRounding = 3.0f;
+    style.FramePadding = ImVec2(6, 3);
+    style.ItemSpacing = ImVec2(8, 4);
+
+    static bool showErrorPopup = false;
+    static bool showDuplicateNamePopup = false;
+    static bool showDeleteLastSequencePopup = false;
+    static bool tasRunning = false;
+
+    if (ImGui::Begin("CamChangePlus - Shot Sequence Builder", &isWindowOpen_, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize)) {
+        static float leftPanelWidth = 220.0f;
+        static int selectedMapping = -1;
+
+        // Sidebar for managing sequences
+        ImGui::BeginChild("LeftPanel", ImVec2(leftPanelWidth, 0), true);
+        ImGui::Text("Sequences");
+        ImGui::Separator();
+
+        static char sequenceName[256] = "";
+        ImGui::InputText("##SequenceName", sequenceName, IM_ARRAYSIZE(sequenceName));
+        ImGui::SameLine();
+        if (ImGui::Button("Add", ImVec2(50, 25))) {
+            if (strlen(sequenceName) > 0) {
+                bool nameExists = false;
+                for (const auto& seq : eventMappings) {
+                    if (seq.first == sequenceName) {
+                        nameExists = true;
+                        break;
+                    }
                 }
+                if (nameExists) {
+                    showDuplicateNamePopup = true;
+                }
+                else {
+                    eventMappings.emplace_back(sequenceName, std::vector<std::pair<std::string, std::string>>());
+                }
+            }
+            else {
+                showErrorPopup = true;
             }
         }
 
-        // Display the action details
-        ImGui::SameLine();
-        ImGui::Text("-> %s (Delay: %.1fs)", eventActions[i].actionName.c_str(), eventActions[i].delay);
+        ImGui::Separator();
 
-        if (strcmp(eventActions[i].actionName.c_str(), "Swivel Right") == 0 || strcmp(eventActions[i].actionName.c_str(), "Swivel Left") == 0) {
+        // List of existing sequences
+        for (size_t i = 0; i < eventMappings.size(); ++i) {
+            if (ImGui::Selectable(eventMappings[i].first.c_str(), selectedMapping == i)) {
+                selectedMapping = i;
+            }
+        }
+
+        if (selectedMapping >= 0 && eventMappings.size() > 1) {
+            if (ImGui::Button("Delete Sequence", ImVec2(ImGui::GetContentRegionAvail().x, 25))) {
+                eventMappings.erase(eventMappings.begin() + selectedMapping);
+                selectedMapping = -1;
+            }
+        }
+        else if (selectedMapping >= 0 && eventMappings.size() == 1) {
+            if (ImGui::Button("Delete Sequence", ImVec2(ImGui::GetContentRegionAvail().x, 25))) {
+                showDeleteLastSequencePopup = true;
+            }
+        }
+
+        ImGui::EndChild();
+        ImGui::SameLine();
+
+        // Main panel for editing sequences
+        ImGui::BeginChild("RightPanel", ImVec2(0, 0), true);
+
+        if (selectedMapping >= 0 && selectedMapping < eventMappings.size()) {
+            ImGui::Text("Editing Sequence: %s", eventMappings[selectedMapping].first.c_str());
+            ImGui::Separator();
+
+            static const char* availableEvents[] = { "Ball Touch", "Jump", "Double Jump", "Flip", "Explosion" };
+            static const char* availableActions[] = { "Toggle Reverse Cam", "Set Yaw", "Enable Ball Cam" };
+
+            static int selectedEvent = 0;
+            static int selectedAction = 0;
+            static float customYaw = 0.0f;
+            static float delay = 0.0f;
+
+            ImGui::Text("Add New Mapping");
+            ImGui::Combo("##Event", &selectedEvent, availableEvents, IM_ARRAYSIZE(availableEvents));
             ImGui::SameLine();
-            ImGui::Text("(Swivel: %.1f%%)", eventActions[i].customValue);
+            ImGui::Text("Event");
+
+            ImGui::Combo("##Action", &selectedAction, availableActions, IM_ARRAYSIZE(availableActions));
+            ImGui::SameLine();
+            ImGui::Text("Action");
+
+            if (selectedAction == 1) {  // Set Yaw
+                ImGui::SliderFloat("Yaw %", &customYaw, -100.0f, 100.0f, "%.1f%%");
+            }
+
+            ImGui::InputFloat("Delay (s)", &delay, 0.1f, 1.0f, "%.2f");
+
+            if (ImGui::Button("Add Mapping", ImVec2(150, 25))) {
+                std::string actionDetail = availableActions[selectedAction];
+                if (selectedAction == 1) {
+                    actionDetail += " (" + std::to_string(customYaw) + "%)";
+                }
+
+                // Ensure the selected sequence exists
+                if (selectedMapping >= 0 && selectedMapping < eventMappings.size()) {
+                    eventMappings[selectedMapping].second.push_back(
+                        std::make_pair(
+                            std::string(availableEvents[selectedEvent]),
+                            "→ " + actionDetail + " (Delay: " + std::to_string(delay) + "s)"
+                        )
+                    );
+                }
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Current Mappings:");
+
+            ImGui::BeginChild("MappingsList", ImVec2(0, 150), true);
+            for (size_t i = 0; i < eventMappings[selectedMapping].second.size(); ++i) {
+                ImGui::Text("%s %s",
+                    eventMappings[selectedMapping].second[i].first.c_str(),
+                    eventMappings[selectedMapping].second[i].second.c_str());
+
+                ImGui::SameLine();
+                if (ImGui::Button(("Delete##" + std::to_string(i)).c_str(), ImVec2(50, 20))) {
+                    eventMappings[selectedMapping].second.erase(eventMappings[selectedMapping].second.begin() + i);
+                    break;
+                }
+
+                // Move Up Button
+                if (i > 0) {
+                    ImGui::SameLine();
+                    if (ImGui::Button(("▲##MoveUp" + std::to_string(i)).c_str(), ImVec2(20, 20))) {
+                        std::swap(eventMappings[selectedMapping].second[i], eventMappings[selectedMapping].second[i - 1]);
+                    }
+                }
+                // Move Down Button
+                if (i < eventMappings[selectedMapping].second.size() - 1) {
+                    ImGui::SameLine();
+                    if (ImGui::Button(("▼##MoveDown" + std::to_string(i)).c_str(), ImVec2(20, 20))) {
+                        std::swap(eventMappings[selectedMapping].second[i], eventMappings[selectedMapping].second[i + 1]);
+                    }
+                }
+            }
+            ImGui::EndChild();
+
+            if (ImGui::Button("Save")) SaveMappingsToFile();
+            ImGui::SameLine();
+            if (ImGui::Button("Load")) LoadMappingsFromFile(sequenceName);
+        }
+        else {
+            ImGui::Text("Select or create a sequence to edit.");
         }
 
-        ImGui::SameLine();
-        if (ImGui::Button("Remove")) {
-            eventActions.erase(eventActions.begin() + i);
+        ImGui::EndChild();
+        ImGui::End();
+    }
+
+    // Error Popup: Empty Sequence Name
+    if (showErrorPopup) {
+        ImGui::OpenPopup("Error");
+        if (ImGui::BeginPopupModal("Error", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Sequence name cannot be empty!");
+            if (ImGui::Button("OK", ImVec2(100, 30))) {
+                showErrorPopup = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
         }
-
-        ImGui::PopID();
     }
 
-    ImGui::Separator();
-
-    if (ImGui::Button("Start TAS")) {
-        StartSequencePlayback();
-    }
-
-    ImGui::SameLine();
-    if (ImGui::Button("Stop TAS")) {
-        StopSequencePlayback();
+    // Error Popup: Duplicate Sequence Name
+    if (showDuplicateNamePopup) {
+        ImGui::OpenPopup("Error");
+        if (ImGui::BeginPopupModal("Error", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Sequence name already exists! Choose a different name.");
+            if (ImGui::Button("OK", ImVec2(100, 30))) {
+                showDuplicateNamePopup = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
     }
 }

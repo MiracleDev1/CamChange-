@@ -1,4 +1,11 @@
-﻿#pragma once
+
+#pragma once
+#include <string>
+#include <fstream>
+#include <filesystem>
+#include <cstdlib>
+#include <iostream>
+
 #include "bakkesmod/plugin/PluginSettingsWindow.h"
 #include "bakkesmod/plugin/pluginwindow.h"
 
@@ -24,5 +31,5 @@ public:
     void OnClose() override;
     void Render() override;
 
-    //virtual void RenderWindow() = 0;  // Must be implemented by the derived class
+    virtual void RenderWindow() = 0;  // Must be implemented by the derived class
 };

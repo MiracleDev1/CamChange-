@@ -1,8 +1,8 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "GuiBase.h"
 
 std::string SettingsWindowBase::GetPluginName() {
-    return "CamChange+";
+    return "CamChangePlus";  // Make sure it's a clean name
 }
 
 void SettingsWindowBase::SetImGuiContext(uintptr_t ctx) {
@@ -10,11 +10,11 @@ void SettingsWindowBase::SetImGuiContext(uintptr_t ctx) {
 }
 
 std::string PluginWindowBase::GetMenuName() {
-    return "CamChange+";  // Unique menu name
+    return "camchangeplus";  // Matches `togglemenu camchangeplus`
 }
 
 std::string PluginWindowBase::GetMenuTitle() {
-    return menuTitle_;
+    return "CamChangePlus - Camera Automation";
 }
 
 void PluginWindowBase::SetImGuiContext(uintptr_t ctx) {
@@ -42,6 +42,12 @@ void PluginWindowBase::Render() {
         return;  // Do not render if the window is not open
     }
 
-    // Call the user-implemented RenderWindow() directly without wrapping it in another ImGui::Begin/End
-    //RenderWindow();  // This will now be responsible for rendering the entire GUI
+    ImGui::SetNextWindowSize(ImVec2(900, 500), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(600, 350), ImVec2(1300, 800));
+
+    if (ImGui::Begin("CamChangePlus - Advanced Camera Control", &isWindowOpen_, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar)) {
+        RenderWindow();  // This will now properly render the menu
+    }
+
+    ImGui::End();
 }
